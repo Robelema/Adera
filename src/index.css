@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+Ethiopic:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans Ethiopic", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  --bg: #F8F9FA;
+  --ink: #1A1A1A;
+  --line: #E5E7EB;
+  --accent: #2563EB;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+.data-grid-header {
+  font-family: 'Georgia', serif;
+  font-style: italic;
+  font-size: 12px;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.data-value-mono {
+  font-family: var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+.card-brutalist {
+  background: white;
+  border: 1px solid var(--line);
+  box-shadow: 2px 2px 0px rgba(0,0,0,0.05);
+}
+
+.sidebar-item-active {
+  background: var(--ink);
+  color: white;
+}
+
+.dark-theme {
+  --bg: #0F172A;
+  --ink: #F8FAFC;
+  --line: #1E293B;
+  background-color: var(--bg);
+  color: var(--ink);
+}
+
+.dark-theme .card-brutalist {
+  background: #1E293B;
+  border-color: #334155;
+  box-shadow: 4px 4px 0px rgba(0,0,0,0.3);
+}
+
+.dark-theme aside, 
+.dark-theme header,
+.dark-theme .bg-white {
+  background-color: #0F172A !important;
+  border-color: #1E293B !important;
+}
+
+.dark-theme .bg-gray-50 {
+  background-color: #1E293B !important;
+}
+
+.dark-theme .text-gray-500,
+.dark-theme .text-gray-400 {
+  color: #94A3B8 !important;
+}
+
+.dark-theme .divide-gray-100 > * + * {
+  border-color: #1E293B !important;
+}
+
+.dark-theme tr:hover {
+  background-color: #1E293B !important;
+}
+
+.dark-theme input, 
+.dark-theme select {
+  background-color: #1E293B !important;
+  border-color: #334155 !important;
+  color: white !important;
+}
+
+.dark-theme .bg-gray-100 {
+  background-color: #1E293B !important;
+}

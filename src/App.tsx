@@ -17,7 +17,11 @@ import {
   Menu,
   X,
   Lock,
-  Image
+  Image,
+  Store,
+  Cloud,
+  FileText,
+  Printer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -269,12 +273,25 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [searchQuery, setSearchQuery] = useState('');
+  const [inventorySearch, setInventorySearch] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [paymentFilter, setPaymentFilter] = useState('');
+  
+  // Shop & Cloud States
+  const [shops, setShops] = useState<any[]>([]);
+  const [currentShopId, setCurrentShopId] = useState<number | null>(null);
+  const [cloudConfig, setCloudConfig] = useState<any>(null);
+  const [cloudFiles, setCloudFiles] = useState<any[]>([]);
+  const [e2eeKey, setE2eeKey] = useState('');
+  const [isE2eeEnabled, setIsE2eeEnabled] = useState(false);
 
   // Form States
   const [showModal, setShowModal] = useState<string | null>(null);
   const [formData, setFormData] = useState<any>({});
+  const [editingItem, setEditingItem] = useState<any>(null);
+  const [payingLoan, setPayingLoan] = useState<any>(null);
+  const [viewingReceipt, setViewingReceipt] = useState<any>(null);
+  const [isImporting, setIsImporting] = useState(false);
 
   const t = translations[lang];
 
@@ -284,22 +301,28 @@ export default function App() {
       const u = JSON.parse(savedUser);
       setUser(u);
       setRole(u.role);
+      setCurrentShopId(u.current_shop_id);
     }
   }, []);
 
   useEffect(() => {
-    if (user) fetchData();
-  }, [reportPeriod, role, user]);
+    if (user) {
+      fetchData();
+      fetchCloudConfig();
+    }
+  }, [reportPeriod, role, user, currentShopId]);
 
   const fetchData = async () => {
     if (!user) return;
     setLoading(true);
     try {
-      const headers = { 
+      const headers: any = { 
         'x-user-role': role,
         'x-user-id': user.id.toString()
       };
-      const [sRes, iRes, tRes, lRes, cRes, stRes, rRes, uRes] = await Promise.all([
+      if (currentShopId) headers['x-shop-id'] = currentShopId.toString();
+
+      const [sRes, iRes, tRes, lRes, cRes, stRes, rRes, uRes, shRes] = await Promise.all([
         fetch('/api/stats', { headers }),
         fetch('/api/inventory', { headers }),
         fetch('/api/transactions', { headers }),
@@ -307,7 +330,8 @@ export default function App() {
         fetch('/api/customers', { headers }),
         fetch('/api/staff', { headers }),
         fetch(`/api/reports?period=${reportPeriod}`, { headers }),
-        fetch('/api/me', { headers })
+        fetch('/api/me', { headers }),
+        fetch('/api/shops', { headers })
       ]);
 
       if (uRes.ok) {
@@ -333,6 +357,7 @@ export default function App() {
       setCustomers(await checkResponse(cRes) || []);
       if (stRes.ok) setStaff(await stRes.json());
       if (rRes.ok) setReportData(await rRes.json());
+      if (shRes.ok) setShops(await shRes.json());
     } catch (e) {
       console.error("Failed to fetch data", e);
     } finally {
@@ -340,12 +365,32 @@ export default function App() {
     }
   };
 
+  const fetchCloudConfig = async () => {
+    if (!user) return;
+    try {
+      const res = await fetch('/api/cloud/config', {
+        headers: { 'x-user-id': user.id.toString() }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCloudConfig(data);
+        setIsE2eeEnabled(data.e2ee_enabled === 1);
+      }
+    } catch (e) {
+      console.error("Cloud config fetch error", e);
+    }
+  };
+
   const handleSave = async () => {
     let endpoint = `/api/${showModal}`;
     if (showModal === 'expenses') endpoint = '/api/transactions';
+    
+    const isEdit = !!editingItem;
+    if (isEdit) endpoint = `${endpoint}/${editingItem.id}`;
+
     try {
       const res = await fetch(endpoint, {
-        method: 'POST',
+        method: isEdit ? 'PUT' : 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'x-user-role': role,
@@ -355,6 +400,7 @@ export default function App() {
       });
       if (res.ok) {
         setShowModal(null);
+        setEditingItem(null);
         setFormData({});
         fetchData();
         if (showModal === 'change-password') alert('Password changed successfully!');
@@ -364,6 +410,28 @@ export default function App() {
       }
     } catch (e) {
       console.error("Save failed", e);
+    }
+  };
+
+  const handleRecordPayment = async (loanId: number, amount: number) => {
+    try {
+      const res = await fetch(`/api/loans/${loanId}/payment`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': user!.id.toString()
+        },
+        body: JSON.stringify({ amount })
+      });
+      if (res.ok) {
+        setPayingLoan(null);
+        fetchData();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Payment failed');
+      }
+    } catch (e) {
+      console.error("Payment failed", e);
     }
   };
 
@@ -389,6 +457,62 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('adera_user');
     setUser(null);
+  };
+
+  const handleSwitchShop = async (shopId: number) => {
+    try {
+      const res = await fetch('/api/shops/switch', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': user!.id.toString()
+        },
+        body: JSON.stringify({ shopId })
+      });
+      if (res.ok) {
+        setCurrentShopId(shopId);
+        setUser({ ...user!, current_shop_id: shopId });
+      }
+    } catch (e) {
+      console.error("Switch shop error", e);
+    }
+  };
+
+  const handleLinkGoogleDrive = async () => {
+    try {
+      const res = await fetch('/api/auth/google/url');
+      const { url } = await res.json();
+      const popup = window.open(url, 'google_auth', 'width=600,height=600');
+      
+      const handleMessage = (event: MessageEvent) => {
+        if (event.data.type === 'GOOGLE_AUTH_SUCCESS') {
+          fetchCloudConfig();
+          window.removeEventListener('message', handleMessage);
+        }
+      };
+      window.addEventListener('message', handleMessage);
+    } catch (e) {
+      console.error("Link Google Drive error", e);
+    }
+  };
+
+  const handleToggleE2EE = async () => {
+    try {
+      const res = await fetch('/api/cloud/e2ee', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': user!.id.toString()
+        },
+        body: JSON.stringify({ enabled: !isE2eeEnabled, key: e2eeKey })
+      });
+      if (res.ok) {
+        setIsE2eeEnabled(!isE2eeEnabled);
+        fetchCloudConfig();
+      }
+    } catch (e) {
+      console.error("Toggle E2EE error", e);
+    }
   };
 
   const handleAuth = async (mode: 'login' | 'signup', data: any) => {
@@ -577,81 +701,103 @@ export default function App() {
     </div>
   );
 
-  const renderInventory = () => (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold">{t.inventory}</h2>
-        <button 
-          onClick={() => setShowModal('inventory')}
-          className="bg-black text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-gray-800 transition-colors"
-        >
-          <Plus size={16} />
-          {t.add_item}
-        </button>
-      </div>
+  const renderInventory = () => {
+    const filtered = inventory.filter(item => 
+      item.name.toLowerCase().includes(inventorySearch.toLowerCase()) || 
+      item.sku.toLowerCase().includes(inventorySearch.toLowerCase()) ||
+      (item.category || '').toLowerCase().includes(inventorySearch.toLowerCase())
+    );
 
-      <div className="card-brutalist overflow-hidden">
-        <div className="p-4 border-b border-gray-100 flex gap-4">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-            <input 
-              type="text" 
-              placeholder="Search items, SKU, categories..." 
-              className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            />
+    return (
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold">{t.inventory}</h2>
+          <div className="flex gap-2">
+            <label className="cursor-pointer bg-white border border-gray-200 text-black px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-gray-50 transition-colors">
+              <ArrowUpRight size={16} />
+              {isImporting ? 'Importing...' : 'Import CSV'}
+              <input type="file" accept=".csv" className="hidden" onChange={handleCSVImport} disabled={isImporting} />
+            </label>
+            <button 
+              onClick={() => setShowModal('inventory')}
+              className="bg-black text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-gray-800 transition-colors"
+            >
+              <Plus size={16} />
+              {t.add_item}
+            </button>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-100">
-                <th className="px-6 py-3 data-grid-header">{t.name}</th>
-                <th className="px-6 py-3 data-grid-header">{t.sku}</th>
-                <th className="px-6 py-3 data-grid-header text-right">{t.quantity}</th>
-                <th className="px-6 py-3 data-grid-header text-right">{t.price}</th>
-                {role === 'Owner' && <th className="px-6 py-3 data-grid-header text-right">{t.cost_price}</th>}
-                <th className="px-6 py-3 data-grid-header text-right">{t.actions}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {inventory.map(item => (
-                <tr key={item.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4 font-bold text-sm">{item.name}</td>
-                  <td className="px-6 py-4 text-xs font-mono text-gray-500">{item.sku}</td>
-                  <td className="px-6 py-4 text-right">
-                    <span className={`font-bold data-value-mono ${item.quantity <= item.min_stock_level ? 'text-rose-600' : ''}`}>
-                      {item.quantity}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-right font-bold data-value-mono">
-                    {item.unit_price.toLocaleString()} {t.currency}
-                  </td>
-                  {role === 'Owner' && (
-                    <td className="px-6 py-4 text-right font-medium text-gray-400 data-value-mono">
-                      {item.cost_price.toLocaleString()}
-                    </td>
-                  )}
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button className="text-blue-600 text-xs font-bold hover:underline">{t.edit}</button>
-                      {role === 'Owner' && (
-                        <button 
-                          onClick={() => handleDelete('inventory', item.id)}
-                          className="text-rose-600 text-xs font-bold hover:underline"
-                        >
-                          {t.delete}
-                        </button>
-                      )}
-                    </div>
-                  </td>
+
+        <div className="card-brutalist overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex gap-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+              <input 
+                type="text" 
+                placeholder="Search items, SKU, categories..." 
+                className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                value={inventorySearch}
+                onChange={e => setInventorySearch(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-100">
+                  <th className="px-6 py-3 data-grid-header">{t.name}</th>
+                  <th className="px-6 py-3 data-grid-header">{t.sku}</th>
+                  <th className="px-6 py-3 data-grid-header text-right">{t.quantity}</th>
+                  <th className="px-6 py-3 data-grid-header text-right">{t.price}</th>
+                  {role === 'Owner' && <th className="px-6 py-3 data-grid-header text-right">{t.cost_price}</th>}
+                  <th className="px-6 py-3 data-grid-header text-right">{t.actions}</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filtered.map(item => (
+                  <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4 font-bold text-sm">{item.name}</td>
+                    <td className="px-6 py-4 text-xs font-mono text-gray-500">{item.sku}</td>
+                    <td className="px-6 py-4 text-right">
+                      <span className={`font-bold data-value-mono ${item.quantity <= item.min_stock_level ? 'text-rose-600' : ''}`}>
+                        {item.quantity}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right font-bold data-value-mono">
+                      {item.unit_price.toLocaleString()} {t.currency}
+                    </td>
+                    {role === 'Owner' && (
+                      <td className="px-6 py-4 text-right font-medium text-gray-400 data-value-mono">
+                        {item.cost_price.toLocaleString()}
+                      </td>
+                    )}
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button 
+                          onClick={() => { setEditingItem(item); setFormData(item); setShowModal('inventory'); }}
+                          className="text-blue-600 text-xs font-bold hover:underline"
+                        >
+                          {t.edit}
+                        </button>
+                        {role === 'Owner' && (
+                          <button 
+                            onClick={() => handleDelete('inventory', item.id)}
+                            className="text-rose-600 text-xs font-bold hover:underline"
+                          >
+                            {t.delete}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderLoans = () => (
     <div className="space-y-6">
@@ -708,9 +854,14 @@ export default function App() {
                 <span>Due: {new Date(loan.due_date).toLocaleDateString()}</span>
               </div>
             </div>
-            <button className="w-full py-2 border border-gray-200 rounded text-xs font-bold hover:bg-gray-50 transition-colors">
-              Record Payment
-            </button>
+            {loan.status !== 'Paid' && (
+              <button 
+                onClick={() => setPayingLoan(loan)}
+                className="w-full py-2 border border-gray-200 rounded text-xs font-bold hover:bg-gray-50 transition-colors"
+              >
+                Record Payment
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -748,7 +899,12 @@ export default function App() {
                 <td className="px-6 py-4 text-xs text-gray-500">{new Date(c.created_at).toLocaleDateString()}</td>
                 <td className="px-6 py-4 text-right">
                   <div className="flex justify-end gap-2">
-                    <button className="text-blue-600 text-xs font-bold hover:underline">{t.edit}</button>
+                    <button 
+                      onClick={() => { setEditingItem(c); setFormData(c); setShowModal('customers'); }}
+                      className="text-blue-600 text-xs font-bold hover:underline"
+                    >
+                      {t.edit}
+                    </button>
                     {role === 'Owner' && (
                       <button 
                         onClick={() => handleDelete('customers', c.id)}
@@ -991,6 +1147,14 @@ export default function App() {
                   <td className="px-6 py-4 text-right font-bold data-value-mono">
                     +{tx.amount.toLocaleString()}
                   </td>
+                  <td className="px-6 py-4 text-right">
+                    <button 
+                      onClick={() => fetchReceipt(tx.id)}
+                      className="text-blue-600 hover:text-blue-800"
+                    >
+                      <FileText size={16} />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1068,6 +1232,54 @@ export default function App() {
     );
   };
 
+  const renderShops = () => (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold">{t.shops}</h2>
+        {user?.plan === 'Pro' && (
+          <button 
+            onClick={() => setShowModal('shops')}
+            className="bg-black text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-gray-800 transition-colors"
+          >
+            <Plus size={16} />
+            {t.add_shop}
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {shops.map(s => (
+          <div key={s.id} className={`card-brutalist p-6 space-y-4 bg-white relative ${currentShopId === s.id ? 'border-2 border-black' : ''}`}>
+            {currentShopId === s.id && (
+              <div className="absolute -top-3 left-6 bg-black text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest">
+                Active
+              </div>
+            )}
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center text-gray-400">
+                <Store size={24} />
+              </div>
+              <div>
+                <h3 className="font-bold">{s.name}</h3>
+                <p className="text-xs text-gray-400">{s.address || 'No address'}</p>
+              </div>
+            </div>
+            <div className="pt-4 border-t border-gray-50 flex justify-between items-center">
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{s.phone || 'No phone'}</div>
+              {currentShopId !== s.id && (
+                <button 
+                  onClick={() => handleSwitchShop(s.id)}
+                  className="text-xs font-bold text-blue-600 hover:underline"
+                >
+                  {t.switch_shop}
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
   const renderSubscription = () => (
     <div className="max-w-4xl space-y-8">
       <div className="flex justify-between items-center">
@@ -1157,6 +1369,202 @@ export default function App() {
     </div>
   );
 
+  const handleCSVImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const lines = text.split('\n');
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+        
+        const items = lines.slice(1).filter(line => line.trim()).map(line => {
+          const values = line.split(',').map(v => v.trim());
+          const item: any = {};
+          headers.forEach((header, index) => {
+            if (header === 'quantity' || header === 'unit_price' || header === 'cost_price') {
+              item[header] = parseFloat(values[index]) || 0;
+            } else {
+              item[header] = values[index];
+            }
+          });
+          return item;
+        });
+
+        const res = await fetch('/api/inventory/import', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-user-id': user!.id.toString() 
+          },
+          body: JSON.stringify({ items })
+        });
+
+        if (res.ok) {
+          alert(`Successfully imported ${items.length} items!`);
+          fetchData();
+        } else {
+          const err = await res.json();
+          alert(`Import failed: ${err.error}`);
+        }
+      } catch (err) {
+        console.error("Import error", err);
+        alert("Failed to parse CSV file. Ensure it follows the correct format.");
+      } finally {
+        setIsImporting(false);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const fetchReceipt = async (id: number) => {
+    try {
+      const res = await fetch(`/api/transactions/${id}/receipt`, {
+        headers: { 'x-user-id': user!.id.toString() }
+      });
+      if (res.ok) {
+        setViewingReceipt(await res.json());
+      }
+    } catch (e) {
+      console.error("Fetch receipt error", e);
+    }
+  };
+  const handleUploadToCloud = async (file: File) => {
+    if (!cloudConfig?.provider) {
+      alert("Please link cloud storage first in Settings.");
+      return;
+    }
+
+    try {
+      let fileData: ArrayBuffer | string = await file.arrayBuffer();
+      let fileName = file.name;
+      let fileType = file.type;
+
+      if (isE2eeEnabled && e2eeKey) {
+        if (e2eeKey.length !== 64) {
+          alert("Encryption key must be 64 characters (32 bytes hex).");
+          return;
+        }
+
+        const keyBuffer = new Uint8Array(e2eeKey.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+        const cryptoKey = await window.crypto.subtle.importKey(
+          "raw",
+          keyBuffer,
+          { name: "AES-CBC" },
+          false,
+          ["encrypt"]
+        );
+
+        const iv = window.crypto.getRandomValues(new Uint8Array(16));
+        const encryptedBuffer = await window.crypto.subtle.encrypt(
+          { name: "AES-CBC", iv },
+          cryptoKey,
+          fileData
+        );
+
+        // Combine IV and encrypted data
+        const combined = new Uint8Array(iv.length + encryptedBuffer.byteLength);
+        combined.set(iv);
+        combined.set(new Uint8Array(encryptedBuffer), iv.length);
+        
+        fileData = combined.buffer;
+        fileName = fileName + ".enc";
+        fileType = "application/octet-stream";
+      }
+
+      // Convert to base64 for transport
+      const base64 = btoa(
+        new Uint8Array(fileData)
+          .reduce((data, byte) => data + String.fromCharCode(byte), '')
+      );
+
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-user-id': user!.id.toString() 
+        },
+        body: JSON.stringify({
+          name: fileName,
+          data: base64,
+          type: fileType
+        })
+      });
+
+      if (res.ok) {
+        alert("File uploaded successfully to cloud!");
+        fetchCloudFiles();
+      } else {
+        const err = await res.json();
+        alert(`Upload failed: ${err.error}`);
+      }
+    } catch (e) {
+      console.error("Upload error", e);
+      alert("Encryption or upload failed. Check console for details.");
+    }
+  };
+
+  const fetchCloudFiles = async () => {
+    if (!user || !cloudConfig) return;
+    try {
+      const res = await fetch('/api/cloud/files', {
+        headers: { 'x-user-id': user.id.toString() }
+      });
+      if (res.ok) {
+        setCloudFiles(await res.json());
+      }
+    } catch (e) {
+      console.error("Fetch cloud files error", e);
+    }
+  };
+
+  const handleDecryptAndDownload = async (fileId: string, fileName: string) => {
+    if (!e2eeKey || e2eeKey.length !== 64) {
+      alert("Please enter a valid 64-character encryption key to decrypt.");
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/cloud/files/${fileId}/content`, {
+        headers: { 'x-user-id': user!.id.toString() }
+      });
+      if (!res.ok) throw new Error("Failed to fetch file content");
+
+      const combined = new Uint8Array(await res.arrayBuffer());
+      const iv = combined.slice(0, 16);
+      const encryptedData = combined.slice(16);
+
+      const keyBuffer = new Uint8Array(e2eeKey.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+      const cryptoKey = await window.crypto.subtle.importKey(
+        "raw",
+        keyBuffer,
+        { name: "AES-CBC" },
+        false,
+        ["decrypt"]
+      );
+
+      const decryptedBuffer = await window.crypto.subtle.decrypt(
+        { name: "AES-CBC", iv },
+        cryptoKey,
+        encryptedData
+      );
+
+      const blob = new Blob([decryptedBuffer]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName.replace('.enc', '');
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Decryption error", e);
+      alert("Decryption failed. Ensure your key is correct.");
+    }
+  };
+
   const renderSettings = () => (
     <div className="max-w-2xl space-y-8">
       <h2 className="text-xl font-bold">{t.settings}</h2>
@@ -1191,6 +1599,98 @@ export default function App() {
           <button onClick={toggleLang} className="px-4 py-2 border border-gray-200 rounded-lg text-xs font-bold hover:bg-gray-50 transition-colors">
             {lang === 'en' ? 'Amharic' : 'English'}
           </button>
+        </div>
+
+        <div className="pt-6 border-t border-gray-100 space-y-4">
+          <div className="font-bold">{t.cloud_storage}</div>
+          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${cloudConfig?.provider ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-200 text-gray-400'}`}>
+                <Cloud size={20} />
+              </div>
+              <div>
+                <div className="text-sm font-bold">{cloudConfig?.provider || t.not_linked}</div>
+                <div className="text-[10px] text-gray-400 uppercase font-bold tracking-widest">{t.storage_status}</div>
+              </div>
+            </div>
+            {!cloudConfig?.provider ? (
+              <button 
+                onClick={handleLinkGoogleDrive}
+                className="px-4 py-2 bg-black text-white rounded-lg text-xs font-bold hover:bg-gray-800 transition-colors"
+              >
+                {t.link_google_drive}
+              </button>
+            ) : (
+              <span className="text-emerald-600 text-xs font-bold">{t.linked}</span>
+            )}
+          </div>
+
+          {cloudConfig && (
+            <div className="pt-6 border-t border-gray-100 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <div className="text-sm font-bold">{t.e2ee}</div>
+                  <div className="text-xs text-gray-400">Encrypt files before uploading</div>
+                </div>
+                <button 
+                  onClick={handleToggleE2EE}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${isE2eeEnabled ? 'bg-emerald-500' : 'bg-gray-200'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${isE2eeEnabled ? 'left-7' : 'left-1'}`} />
+                </button>
+              </div>
+              {isE2eeEnabled && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase text-gray-400">{t.encryption_key}</label>
+                  <input 
+                    type="password" 
+                    value={e2eeKey}
+                    onChange={e => setE2eeKey(e.target.value)}
+                    placeholder="Enter 64-character hex key"
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none text-xs font-mono"
+                  />
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-gray-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-bold uppercase tracking-widest text-gray-400">Cloud Files</div>
+                  <label className="cursor-pointer bg-black text-white px-3 py-1 rounded-lg text-[10px] font-bold hover:bg-gray-800 transition-colors">
+                    Upload File
+                    <input 
+                      type="file" 
+                      className="hidden" 
+                      onChange={e => e.target.files?.[0] && handleUploadToCloud(e.target.files[0])} 
+                    />
+                  </label>
+                </div>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                  {cloudFiles.length > 0 ? cloudFiles.map(f => (
+                    <div key={f.id} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg text-xs">
+                      <div className="flex items-center gap-2 truncate">
+                        <FileText size={14} className="text-gray-400" />
+                        <span className="truncate">{f.name}</span>
+                      </div>
+                      <div className="flex gap-2">
+                        {f.name.endsWith('.enc') ? (
+                          <button 
+                            onClick={() => handleDecryptAndDownload(f.id, f.name)}
+                            className="text-emerald-600 hover:underline font-bold"
+                          >
+                            Decrypt
+                          </button>
+                        ) : (
+                          <a href={f.webViewLink} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">View</a>
+                        )}
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="text-center py-4 text-gray-400 text-xs italic">No files found in cloud storage</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="pt-6 border-t border-gray-100">
@@ -1268,6 +1768,7 @@ export default function App() {
           <SidebarItem icon={ArrowUpRight} label={t.transactions} active={activeTab === 'transactions'} onClick={() => { setActiveTab('transactions'); setIsSidebarOpen(false); }} />
           <SidebarItem icon={ArrowDownRight} label={t.expenses} active={activeTab === 'expenses'} onClick={() => { setActiveTab('expenses'); setIsSidebarOpen(false); }} />
           <SidebarItem icon={HandCoins} label={t.loans} active={activeTab === 'loans'} onClick={() => { setActiveTab('loans'); setIsSidebarOpen(false); }} />
+          {role === 'Owner' && <SidebarItem icon={Store} label={t.shops} active={activeTab === 'shops'} onClick={() => { setActiveTab('shops'); setIsSidebarOpen(false); }} />}
           {role === 'Owner' && <SidebarItem icon={TrendingUp} label={t.reports} active={activeTab === 'reports'} onClick={() => { setActiveTab('reports'); setIsSidebarOpen(false); }} />}
           <SidebarItem icon={Users} label={t.staff} active={activeTab === 'staff'} onClick={() => { setActiveTab('staff'); setIsSidebarOpen(false); }} />
           {role === 'Owner' && <SidebarItem icon={HandCoins} label={t.subscription} active={activeTab === 'subscription'} onClick={() => { setActiveTab('subscription'); setIsSidebarOpen(false); }} />}
@@ -1305,7 +1806,21 @@ export default function App() {
             <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
               <Menu size={20} />
             </button>
-            <h2 className="font-bold text-sm uppercase tracking-widest text-gray-400">{activeTab}</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="font-bold text-sm uppercase tracking-widest text-gray-400">{activeTab}</h2>
+              {shops.length > 1 && (
+                <div className="flex items-center gap-2 px-3 py-1 bg-gray-50 rounded-full border border-gray-100">
+                  <Store size={14} className="text-gray-400" />
+                  <select 
+                    value={currentShopId || ''} 
+                    onChange={e => handleSwitchShop(parseInt(e.target.value))}
+                    className="bg-transparent text-xs font-bold outline-none cursor-pointer"
+                  >
+                    {shops.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2 lg:gap-4">
             <button onClick={toggleLang} className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-gray-200 text-[10px] lg:text-xs font-bold hover:bg-gray-50 transition-colors">
@@ -1357,6 +1872,7 @@ export default function App() {
                   {activeTab === 'customers' && renderCustomers()}
                   {activeTab === 'loans' && renderLoans()}
                   {activeTab === 'staff' && renderStaff()}
+                  {activeTab === 'shops' && renderShops()}
                   {activeTab === 'reports' && renderReports()}
                   {activeTab === 'transactions' && renderTransactions()}
                   {activeTab === 'expenses' && renderExpenses()}
@@ -1374,13 +1890,87 @@ export default function App() {
         </div>
       </main>
 
+      {/* Receipt Modal */}
+      <AnimatePresence>
+        {viewingReceipt && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-8 space-y-6 print:p-0">
+                <div className="text-center space-y-2">
+                  <div className="w-12 h-12 bg-black rounded-xl flex items-center justify-center text-white font-black italic mx-auto text-xl">A</div>
+                  <h2 className="text-xl font-black uppercase tracking-tighter">{viewingReceipt.shop_name || 'Adera ERP'}</h2>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Official Receipt</p>
+                </div>
+
+                <div className="border-y border-dashed border-gray-200 py-4 space-y-2">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-400 uppercase font-bold">Receipt No</span>
+                    <span className="font-bold">#TXN-{viewingReceipt.id.toString().padStart(6, '0')}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-400 uppercase font-bold">Date</span>
+                    <span className="font-bold">{new Date(viewingReceipt.date).toLocaleString()}</span>
+                  </div>
+                  {viewingReceipt.customer_name && (
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-400 uppercase font-bold">Customer</span>
+                      <span className="font-bold">{viewingReceipt.customer_name}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="text-xs font-bold uppercase tracking-widest text-gray-400">Description</div>
+                  <div className="text-sm font-medium p-3 bg-gray-50 rounded-lg border border-gray-100 italic">
+                    {viewingReceipt.description}
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-4 border-t border-gray-100">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Subtotal</span>
+                    <span className="font-bold">{viewingReceipt.amount.toLocaleString()} {t.currency}</span>
+                  </div>
+                  <div className="flex justify-between text-lg font-black pt-2 border-t border-gray-200">
+                    <span>TOTAL</span>
+                    <span>{viewingReceipt.amount.toLocaleString()} {t.currency}</span>
+                  </div>
+                </div>
+
+                <div className="text-center pt-6 space-y-4 no-print">
+                  <button 
+                    onClick={() => window.print()}
+                    className="w-full py-3 bg-black text-white rounded-xl font-bold hover:bg-gray-800 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Printer size={18} />
+                    Print Receipt
+                  </button>
+                  <button 
+                    onClick={() => setViewingReceipt(null)}
+                    className="text-xs font-bold text-gray-400 uppercase tracking-widest hover:text-black transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Modals */}
       {showModal === 'customers' && (
-        <Modal title={t.add_customer} onClose={() => setShowModal(null)} onSave={handleSave}>
+        <Modal title={editingItem ? 'Edit Customer' : t.add_customer} onClose={() => { setShowModal(null); setEditingItem(null); setFormData({}); }} onSave={handleSave}>
           <div className="space-y-1">
             <label className="text-[10px] font-bold uppercase text-gray-400">{t.name}</label>
             <input 
               type="text" 
+              value={formData.name || ''}
               className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-black/5 outline-none"
               onChange={e => setFormData({...formData, name: e.target.value})}
             />
@@ -1389,6 +1979,7 @@ export default function App() {
             <label className="text-[10px] font-bold uppercase text-gray-400">{t.phone}</label>
             <input 
               type="text" 
+              value={formData.phone || ''}
               className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-black/5 outline-none"
               onChange={e => setFormData({...formData, phone: e.target.value})}
             />
@@ -1397,27 +1988,46 @@ export default function App() {
       )}
 
       {showModal === 'inventory' && (
-        <Modal title={t.add_item} onClose={() => setShowModal(null)} onSave={handleSave}>
+        <Modal title={editingItem ? 'Edit Item' : t.add_item} onClose={() => { setShowModal(null); setEditingItem(null); setFormData({}); }} onSave={handleSave}>
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2 space-y-1">
               <label className="text-[10px] font-bold uppercase text-gray-400">{t.name}</label>
-              <input type="text" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, name: e.target.value})} />
+              <input type="text" value={formData.name || ''} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, name: e.target.value})} />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-bold uppercase text-gray-400">{t.sku}</label>
-              <input type="text" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, sku: e.target.value})} />
+              <input type="text" value={formData.sku || ''} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, sku: e.target.value})} disabled={!!editingItem} />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-bold uppercase text-gray-400">{t.quantity}</label>
-              <input type="number" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, quantity: parseInt(e.target.value)})} />
+              <input type="number" value={formData.quantity || 0} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, quantity: parseInt(e.target.value)})} />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-bold uppercase text-gray-400">{t.price}</label>
-              <input type="number" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, unit_price: parseFloat(e.target.value)})} />
+              <input type="number" value={formData.unit_price || 0} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, unit_price: parseFloat(e.target.value)})} />
             </div>
             <div className="space-y-1">
               <label className="text-[10px] font-bold uppercase text-gray-400">{t.cost_price}</label>
-              <input type="number" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, cost_price: parseFloat(e.target.value)})} />
+              <input type="number" value={formData.cost_price || 0} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, cost_price: parseFloat(e.target.value)})} />
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {payingLoan && (
+        <Modal title="Record Loan Payment" onClose={() => setPayingLoan(null)} onSave={() => handleRecordPayment(payingLoan.id, formData.payment_amount)}>
+          <div className="space-y-4">
+            <div className="p-4 bg-blue-50 rounded-xl">
+              <div className="text-xs font-bold text-blue-400 uppercase tracking-widest">Remaining Balance</div>
+              <div className="text-2xl font-black text-blue-700">{payingLoan.remaining_amount.toLocaleString()} {t.currency}</div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold uppercase text-gray-400">Payment Amount</label>
+              <input 
+                type="number" 
+                className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" 
+                onChange={e => setFormData({...formData, payment_amount: parseFloat(e.target.value)})} 
+              />
             </div>
           </div>
         </Modal>
@@ -1430,7 +2040,10 @@ export default function App() {
               <label className="text-[10px] font-bold uppercase text-gray-400">{t.customer}</label>
               <select 
                 className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none"
-                onChange={e => setFormData({...formData, customer_id: parseInt(e.target.value), type: 'Sale'})}
+                onChange={e => {
+                  const val = e.target.value;
+                  setFormData({...formData, customer_id: val ? parseInt(val) : null, type: 'Sale'});
+                }}
               >
                 <option value="">Select Customer</option>
                 {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -1489,6 +2102,25 @@ export default function App() {
                 <span className="text-xs font-bold text-gray-400 uppercase">Total Amount</span>
                 <span className="text-lg font-black">{((formData.cash_amount || 0) + (formData.credit_amount || 0) + (formData.online_amount || 0)).toLocaleString()} {t.currency}</span>
               </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showModal === 'shops' && (
+        <Modal title={t.add_shop} onClose={() => setShowModal(null)} onSave={handleSave}>
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold uppercase text-gray-400">{t.shop_name}</label>
+              <input type="text" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, name: e.target.value})} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold uppercase text-gray-400">{t.address}</label>
+              <input type="text" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, address: e.target.value})} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold uppercase text-gray-400">{t.phone}</label>
+              <input type="text" className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl outline-none" onChange={e => setFormData({...formData, phone: e.target.value})} />
             </div>
           </div>
         </Modal>

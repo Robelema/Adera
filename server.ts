@@ -15,14 +15,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Environment Variable Validation
-const requiredEnv = ["NODE_ENV"];
-requiredEnv.forEach(env => {
-  if (!process.env[env]) {
-    throw new Error(`Critical Error: ${env} environment variable is not set.`);
-  }
-});
+const requiredEnv = ["NODE_ENV", "TOKEN_ENCRYPTION_KEY"];
+if (process.env.NODE_ENV === "production") {
+  requiredEnv.forEach(env => {
+    if (!process.env[env]) {
+      throw new Error(`Critical Error: ${env} environment variable is not set in production.`);
+    }
+  });
+}
 
-const db = new Database("nexa.db");
+const db = new Database(path.join(process.cwd(), "nexa.db"));
 db.pragma('foreign_keys = ON');
 
 // Token Encryption Helpers
@@ -1275,9 +1277,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.join(__dirname, "dist")));
+    const publicPath = __dirname.endsWith("dist") ? __dirname : path.join(__dirname, "dist");
+    app.use(express.static(publicPath));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(__dirname, "dist", "index.html"));
+      res.sendFile(path.join(publicPath, "index.html"));
     });
   }
 
